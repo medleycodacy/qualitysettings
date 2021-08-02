@@ -1,6 +1,433 @@
-CURRENT_TASKDEF_CONTAINERDEF=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.containerDefinitions"`
-TASKDEF_ROLE_ARN=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.taskRoleArn"`
-sed -i 's/$SECURITY_GROUPS/'$SECURITY_GROUPS'/' appspec.yaml
+Skip to content
+Search or jump to…
 
-import { Tabs } from '@codacy/ui-components'
-import { TabButtonProps, TabWrapperProps } from '@codacy/ui-components/lib/Tab/Tab.types'
+Pull requests
+Issues
+Marketplace
+Explore
+ 
+@medleycodacy 
+codacy
+/
+codacy-spa
+Private
+6
+10
+Code
+Pull requests
+2
+Actions
+Security
+Insights
+Settings
+codacy-spa/src/pages/organization/components/AddPeopleModal/SuggestedPeopleTable/SuggestedPeopleTable.tsx /
+@inesgomas
+inesgomas feature: Apply updated settings CY-4681
+Latest commit c4c4d31 19 days ago
+ History
+ 3 contributors
+@alerizzo@inesgomas@prcr
+390 lines (347 sloc)  12.7 KB
+  
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Box,
+  Divider,
+  Flex,
+  Input,
+  InlineMessage,
+  Paragraph,
+  SearchIcon,
+  SelectableTable,
+  Subheader,
+  Table,
+  useDebounce,
+} from '@codacy/ui-components'
+import useMin3CharsInput from 'common/useMin3CharsInput'
+import {
+  Provider,
+  RepositorySuggestedAuthor,
+  SuggestedAuthor,
+  RequestToJoin,
+  CodacyAPIListOrganizationJoinRequestsOptionalParams,
+} from '@codacy/api-typescript/lib/models'
+import { PersonRow } from './PersonRow'
+import { useUserContext } from 'context/UserContext'
+import { EmptyState, ScrollContainer } from 'components'
+import { useAPIContext } from 'context/ApiContext'
+import { Person } from '../../PersonInfo'
+import { useOrganizationAccessContext } from 'pages/organization/OrganizationAccessContext'
+
+interface SuggestedPeopleTableProps {
+  onCountChange?: (newLength: number) => void
+  onChange?: (selected: Person[]) => void
+  provider: Provider
+  organization: string
+  repository?: string
+}
+
+const filterPerson = (s: string) => (p: Person) => {
+  if ('email' in p && p.email.toLocaleLowerCase().indexOf(s) >= 0) return true
+  if ('name' in p && p.name.toLocaleLowerCase().indexOf(s) >= 0) return true
+  if ('commitEmail' in p && p.commitEmail.toLocaleLowerCase().indexOf(s) >= 0) return true
+
+  return false
+}
+
+const mergeResults = (
+  _pendingRequests: RequestToJoin[],
+  _suggestedPeople: RepositorySuggestedAuthor[] | SuggestedAuthor[]
+) => {
+  const suggestedPeopleResult: (RepositorySuggestedAuthor | SuggestedAuthor)[] = []
+
+  _suggestedPeople.forEach((author: RepositorySuggestedAuthor | SuggestedAuthor) => {
+    if (_pendingRequests.findIndex((pr) => pr.email === author.commitEmail) < 0) {
+      suggestedPeopleResult.push(author)
+    }
+  })
+
+  return [..._pendingRequests, ...suggestedPeopleResult]
+}
+
+const TableHeader: React.FC = () => (
+  <SelectableTable.Header sticky>
+    <Table.HeaderCell width={0.4}>Email</Table.HeaderCell>
+    <Table.HeaderCell width={0.2}>Last commit</Table.HeaderCell>
+    <Table.HeaderCell width={0.2}>{/* pending request */}</Table.HeaderCell>
+    <Table.HeaderCell>{/* remove pending request */}</Table.HeaderCell>
+  </SelectableTable.Header>
+)
+
+export const SuggestedPeopleTable: React.FC<SuggestedPeopleTableProps> = ({
+  onChange,
+  onCountChange,
+  provider,
+  organization,
+  repository,
+}) => {
+  const { api } = useAPIContext()
+  const { handleAuthedException } = useUserContext()
+  const { organization: organizationInfo, billing } = useOrganizationAccessContext()
+
+  const abortController = useMemo(() => new AbortController(), [])
+
+  const [isFetching, setIsFetching] = useState<boolean>(true)
+  const [isSearchingMore, setIsSearchingMore] = useState<boolean>(false)
+
+  const [people, setPeople] = useState<Person[]>([]) // all people already fetched, without an active search
+  const [searchResults, setSearchResults] = useState<Person[]>([]) // subset of people visible when search is enabled
+
+  const [selected, setSelected] = useState<Person[]>([])
+  const [removed, setRemoved] = useState<{ email: string; selected: boolean }[]>([])
+
+  const searchInput = useMin3CharsInput(true)('', false)
+  const searchValue = useDebounce(searchInput.value, 500)?.toString() || undefined
+
+  const baseFetchOptions = useMemo(
+    () => ({
+      abortSignal: abortController.signal,
+      limit: 20,
+    }),
+    [abortController.signal]
+  )
+
+  const fetchPendingRequests = useCallback(
+    async (options?: CodacyAPIListOrganizationJoinRequestsOptionalParams) => {
+      // do not fetch pending requests for a repository
+      if (repository) return []
+
+      // fetch pending requests
+      const { data } = await api.listOrganizationJoinRequests(provider, organization, {
+        ...baseFetchOptions,
+        ...options,
+      })
+      return data
+    },
+    [api, baseFetchOptions, organization, provider, repository]
+  )
+
+  const fetchSuggestedPeople = useCallback(
+    async (options?: CodacyAPIListOrganizationJoinRequestsOptionalParams) => {
+      // check which endpoint to call
+      if (repository) {
+        const { data } = await api.peopleSuggestionsForRepository(provider, organization, repository, {
+          ...baseFetchOptions,
+          ...options,
+        })
+        return data
+      } else {
+        const { data } = await api.peopleSuggestionsForOrganization(provider, organization, {
+          ...baseFetchOptions,
+          ...options,
+        })
+        return data
+      }
+    },
+    [api, baseFetchOptions, organization, provider, repository]
+  )
+
+  useEffect(() => {
+    try {
+      abortController.abort()
+      setIsFetching(true)
+      setPeople([])
+
+      Promise.all([fetchPendingRequests({ limit: 50 }), fetchSuggestedPeople()]).then(
+        ([_pendingRequests, _suggestedPeople]) => {
+          setPeople(mergeResults(_pendingRequests, _suggestedPeople))
+          setIsFetching(false)
+        }
+      )
+    } catch (err) {
+      handleAuthedException(err)
+      setIsFetching(false)
+    }
+  }, [
+    abortController,
+    api,
+    fetchPendingRequests,
+    fetchSuggestedPeople,
+    handleAuthedException,
+    organization,
+    provider,
+    repository,
+  ])
+
+  useEffect(() => {
+    if (onCountChange && !isFetching) onCountChange(people.length)
+  }, [people, onCountChange, isFetching])
+
+  useEffect(() => {
+    // if searchValue is empty, restore full set
+    if (!searchValue || searchValue.length < 3) {
+      setSearchResults([])
+    }
+    // otherwise, perform a local search first
+    else {
+      const results = people.filter(filterPerson(searchValue))
+
+      if (results.length > 0) {
+        // results found, just show them
+        setSearchResults(results)
+      } else {
+        // try finding results remotely
+        try {
+          abortController.abort()
+          setIsSearchingMore(true)
+
+          Promise.all([
+            fetchPendingRequests({ search: searchValue }),
+            fetchSuggestedPeople({ search: searchValue }),
+          ]).then(([_pendingRequests, _suggestedPeople]) => {
+            const searchResults = mergeResults(_pendingRequests, _suggestedPeople)
+            setSearchResults(searchResults)
+            setIsSearchingMore(false)
+          })
+        } catch (err) {
+          handleAuthedException(err)
+          setIsSearchingMore(false)
+        }
+      }
+    }
+  }, [searchValue, people, abortController, fetchPendingRequests, fetchSuggestedPeople, handleAuthedException])
+
+  const onSelect = useCallback(
+    (_selected: Person[]) => {
+      setSelected(_selected)
+      onChange && onChange(_selected)
+    },
+    [onChange]
+  )
+
+  const handlePersonRemove = useCallback(
+    (person: RequestToJoin) => {
+      // remove the entry from the selected array
+      const _selected = selected.filter((sp) => 'commitEmail' in sp || sp.email !== person.email)
+      if (_selected.length !== selected.length) {
+        setSelected(_selected)
+        onChange && onChange(_selected)
+
+        setRemoved((rs) => [...rs, { email: person.email, selected: true }])
+      } else {
+        setRemoved((rs) => [...rs, { email: person.email, selected: false }])
+      }
+    },
+    [onChange, selected]
+  )
+
+  const handlePersonUndoRemove = useCallback(
+    (person: RequestToJoin) => {
+      setRemoved((rs) => {
+        // restore removed row exactly as it was
+        const toRestore = rs.splice(
+          rs.findIndex((r) => r.email === person.email),
+          1
+        )
+
+        if (toRestore.length > 0 && toRestore[0].selected) {
+          setSelected((s) => {
+            const result = [...s, person]
+            onChange && onChange(result)
+
+            return result
+          })
+        }
+
+        return rs
+      })
+    },
+    [onChange]
+  )
+
+  const onSearchSelect = useCallback(
+    (_selected: Person[]) => {
+      // get the newly selected rows
+      const diffSelected = _selected.filter(
+        (p) => selected.indexOf(p) < 0 && !removed.some((r) => 'email' in p && r.email === p.email)
+      )
+
+      // get search results not selected (so we just in case remove them properly from the selected ones)
+      const diffNotSelected = searchResults.filter((p) => _selected.indexOf(p) < 0)
+
+      // remove the not selected ones from the full selection if present
+      const needToRemove = selected.filter((p) => diffNotSelected.indexOf(p) >= 0)
+
+      const result = selected
+
+      needToRemove.forEach((p) => result.splice(result.indexOf(p), 1))
+
+      // add the newly selected
+      result.push(...diffSelected)
+
+      // check if some of the newly selected are not in the local resultset and add them
+      const newRows = diffSelected.filter((p) => people.indexOf(p) < 0)
+      if (newRows.length > 0) {
+        setPeople([...people, ...newRows])
+      }
+
+      // update state
+      if (diffSelected.length > 0 || needToRemove.length > 0) {
+        setSelected(result)
+        onChange && onChange(result)
+      }
+    },
+    [onChange, people, removed, searchResults, selected]
+  )
+
+  const searchSelection = useMemo<Person[] | undefined>(() => {
+    if (isSearchingMore || !selected.length || !people.length) return undefined
+
+    return selected.filter((p) => searchResults.indexOf(p) >= 0)
+  }, [isSearchingMore, selected, people, searchResults])
+
+  if (!isFetching && people.length === 0) {
+    if (billing?.isPremium) {
+      return (
+        <InlineMessage status="info" mt={5} mb={6}>
+          As new commits come in, we will show you a list of recent contributors whose commits are not being analyzed
+          yet.
+        </InlineMessage>
+      )
+    } else if (organizationInfo.joinMode !== 'auto') {
+      return (
+        <InlineMessage status="info" mt={5} mb={6}>
+          There are no pending join requests. Ask your teammates to join {organizationInfo.name} on Codacy, or invite
+          them by email.
+        </InlineMessage>
+      )
+    }
+  }
+
+  return (
+    <Flex flexDirection="column" mt={5}>
+      <Box mb={4}>
+        <Input
+          leftIcon={SearchIcon}
+          size="md"
+          id="add-people-search"
+          placeholder="Search email addresses"
+          showClearButton
+          disabled={!searchValue && people.length === 0}
+          {...searchInput}
+          isLoading={isFetching && !!searchValue}
+        />
+      </Box>
+      <ScrollContainer height="35vh">
+        {searchValue &&
+          (searchResults.length > 0 || isSearchingMore ? (
+            <SelectableTable
+              items={searchResults}
+              onSelectionChange={onSearchSelect}
+              initialValue={{ selected: searchSelection }}
+            >
+              <TableHeader />
+              <Table.Rows>
+                {searchResults.map((person, idx) => (
+                  <PersonRow
+                    person={person}
+                    pendingRequest={'creationDate' in person}
+                    index={idx}
+                    key={`spt-${'email' in person ? person.email : person.commitEmail}`}
+                    organization={organization}
+                    provider={provider}
+                    removed={'creationDate' in person && removed.some((r) => r.email === person.email)}
+                    onRemove={handlePersonRemove}
+                    onUndoRemove={handlePersonUndoRemove}
+                  />
+                ))}
+                {isSearchingMore && <PersonRow.Skeleton />}
+              </Table.Rows>
+            </SelectableTable>
+          ) : (
+            <EmptyState template="satellite" maxWidth={798} width={798} height="100%" imageHeight="120px">
+              <Subheader size="lg" mb={2} mt={-2}>
+                We couldn't find a person matching that email address
+              </Subheader>
+              <Paragraph size="md" as="div">
+                Make sure the email address is typed correctly. You can also add them by email address below.
+              </Paragraph>
+            </EmptyState>
+          ))}
+
+        {(!searchValue || searchValue.length < 3) && (
+          <SelectableTable
+            items={people}
+            onSelectionChange={onSelect}
+            initialValue={!isFetching ? { selected } : undefined}
+          >
+            <TableHeader />
+            <Table.Rows>
+              {people.map((person, idx) => (
+                <PersonRow
+                  person={person}
+                  pendingRequest={'creationDate' in person}
+                  index={idx}
+                  key={`spt-${'email' in person ? person.email : person.commitEmail}`}
+                  organization={organization}
+                  provider={provider}
+                  removed={'creationDate' in person && removed.some((r) => r.email === person.email)}
+                  onRemove={handlePersonRemove}
+                  onUndoRemove={handlePersonUndoRemove}
+                />
+              ))}
+              {isFetching && <PersonRow.Skeleton />}
+            </Table.Rows>
+          </SelectableTable>
+        )}
+      </ScrollContainer>
+      <Divider mt={0} mb={5} height={2} />
+    </Flex>
+  )
+}
+© 2021 GitHub, Inc.
+Terms
+Privacy
+Security
+Status
+Docs
+Contact GitHub
+Pricing
+API
+Training
+Blog
+About
