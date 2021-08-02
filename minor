@@ -1,3 +1,6 @@
 CURRENT_TASKDEF_CONTAINERDEF=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.containerDefinitions"`
 TASKDEF_ROLE_ARN=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.taskRoleArn"`
 sed -i 's/$SECURITY_GROUPS/'$SECURITY_GROUPS'/' appspec.yaml
+
+import { Tabs } from '@codacy/ui-components'
+import { TabButtonProps, TabWrapperProps } from '@codacy/ui-components/lib/Tab/Tab.types'
