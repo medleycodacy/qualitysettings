@@ -1,0 +1,3 @@
+CURRENT_TASKDEF_CONTAINERDEF=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.containerDefinitions"`
+TASKDEF_ROLE_ARN=`echo $CURRENT_TASKDEF| jq --raw-output ".taskDefinition.taskRoleArn"`
+sed -i 's/$SECURITY_GROUPS/'$SECURITY_GROUPS'/' appspec.yaml
